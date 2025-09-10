@@ -1,0 +1,90 @@
+:root{
+  --bg:#0e1116;
+  --panel:#141a25;
+  --muted:#9aa4b2;
+  --text:#e6edf3;
+  --border:#202636;
+  --chip:#0b0f18;
+  --chip-bd:#273043;
+
+  --grid:#1b2232;
+  --grid-strong:#24314a;
+
+  --al30:#4aa3ff;
+  --gd30:#ffd166;
+  --ratio:#58d68d;
+  --violet:#b184e6;
+
+  --good:#2ecc71;
+  --bad:#e74c3c;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,"Noto Sans";
+}
+
+/* Header */
+header{
+  display:flex; align-items:center; gap:.75rem;
+  padding:.75rem 1rem; border-bottom:1px solid var(--border);
+  background:linear-gradient(180deg, #0f141f, #0c1018);
+  position:sticky; top:0; z-index:5;
+}
+header h1{font-size:16px; margin:0 .5rem 0 0; letter-spacing:.3px; color:#c5cfde; font-weight:600}
+.toolbar{display:flex; flex-wrap:wrap; gap:.5rem; align-items:center}
+.btn{
+  border:1px solid var(--chip-bd); background:var(--chip); color:var(--text);
+  padding:.35rem .6rem; border-radius:.5rem; cursor:pointer; user-select:none;
+  transition:transform .02s ease, background .15s ease, border .15s ease; font-weight:600; font-size:12px;
+}
+.btn:hover{border-color:#3a4661}
+.btn:active{transform:scale(.98)}
+.btn.active{background:#1d2435; border-color:#4a5c86}
+.status{margin-left:auto; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; color:var(--muted); font-size:12px}
+.pill{padding:.2rem .5rem; border:1px solid var(--chip-bd); border-radius:999px; background:var(--chip); color:#cbd5e1}
+.ws-ok{color:var(--good); border-color:rgba(46,204,113,.4)}
+.ws-bad{color:var(--bad); border-color:rgba(231,76,60,.4)}
+
+/* Layout */
+main{
+  display:grid; grid-template-columns:minmax(0,1fr) 520px; gap:10px; padding:10px; height:calc(100% - 58px);
+}
+#chartWrap{
+  background:var(--panel); border:1px solid var(--border); border-radius:10px;
+  display:flex; flex-direction:column; min-height:0;
+}
+/* Altura dinámica la ajusta chart.js según resolución */
+#chart{width:100%; height:100%; min-height:480px}
+aside{display:flex; flex-direction:column; gap:10px; min-height:0}
+
+/* Cards / texto */
+.card{background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:.75rem}
+.h3{margin:0;font-size:13px;color:#c9d3e7}
+.card h3{margin:.25rem 0 .5rem; font-size:13px; color:#c9d3e7; letter-spacing:.2px; display:flex; justify-content:space-between; align-items:center}
+.row{display:flex; justify-content:space-between; gap:.5rem; margin:.25rem 0}
+.lbl{color:#9fb0cc}
+.val{color:#e8eef9; font-weight:700}
+.sep{height:1px; background:#243048; margin:.5rem 0}
+.tiny{font-size:11px; color:#9aa6bd}
+.source{opacity:.9}
+.foot{margin-top:auto; font-size:11px; color:#8b97ab; display:flex; justify-content:space-between; gap:.5rem; align-items:center}
+.kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; background:#0a0f18; border:1px solid #222b3f; border-radius:6px; padding:.15rem .35rem; color:#d1dcf4}
+
+/* Libros lado a lado */
+.books-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.order-title{display:flex; justify-content:space-between; align-items:center}
+.order-box{background:#101625; border:1px solid var(--border); border-radius:10px; padding:.6rem}
+.grid2{display:grid; grid-template-columns:1fr 1fr; gap:.5rem}
+
+table.order{width:100%; border-collapse:collapse; font-size:12px}
+table.order th, table.order td{padding:.2rem .25rem; border-bottom:1px dashed #243048; text-align:right}
+table.order th{color:#9fb0cc; font-weight:600}
+table.order td.qty{color:#c2cad8}
+
+@media (max-width: 1200px){
+  main{grid-template-columns:1fr}
+  .books-grid{grid-template-columns:1fr}
+}

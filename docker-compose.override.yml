@@ -1,0 +1,14 @@
+services:
+  ingestor:
+    image: ws-bonos-ws-bonos
+    container_name: ws-bonos-ingestor
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: python -u /app/ingestor.py
+    volumes:
+      - ./data:/app/data
+    networks:
+      - shared-net
+    depends_on:
+      - ws-bonos

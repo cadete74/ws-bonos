@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dump crudo — ordenado por ts DESC</title>
+</head>
+<body>
+<pre id="out">cargando…</pre>
+<script>
+(function(){
+  // Detecta base para soportar subpath (p.ej. /foo/static/index.html)
+  function apiBase(){
+    const {origin, pathname} = window.location;
+    const i = pathname.indexOf('/static/');
+    return origin + (i >= 0 ? pathname.slice(0, i) : '');
+  }
+  const API_BASE = apiBase();
+
+  const LIMITS = [1_000_000, 300_000, 100_000];
+  const FETCH_TIMEOUT_MS = 25000;
+
+  // Parse robusto de ts -> ms (ISO con microsegundos o epoch ms/seg)
+  function isNumericLike(x){ return typeof x === 'number' || (/^\d+(\.\d+)?$/).test(String(x)); }
+  function parseIsoToMs(iso){
+    let t = Date.parse(iso);
+    if (!Number.isNaN(t)) return t;
+    const m = String(iso).match(/^(.*T\d{2}:\d{2}:\d{2})\.(\d+)(.*)$/);
+    if (m){
+      const frac = m[2].slice(0,3).padEnd(3,'0');
+      t = Date.parse(`${m[1]}.${frac}${m[3]}`);
+      if (!Number.isNaN(t)) return t;
+    }
+    return NaN;
+  }
+  function tsToMs(ts){
+    if (typeof ts === 'string') return parseIsoToMs(ts);
+    if (isNumericLike(ts)){ const n = Number(ts); return (n < 1e11) ? (n*1000) : n; }
+    return NaN;
+  }
+
+  async function fetchWithTimeout(url, opts={}, ms=FETCH_TIMEOUT_MS){
+    const ctrl = new AbortController();
+    const t = setTimeout(()=>ctrl.abort(), ms);
+    try { return await fetch(url, { ...opts, signal: ctrl.signal }); }
+    finally { clearTimeout(t); }
+  }
+
+  async function load(){
+    const $out = document.getElementById('out');
+    $out.textContent = 'cargando…';
+    for (const lim of LIMITS){
+      try{
+        const res = await fetchWithTimeout(`${API_BASE}/ticks/recent?limit=${lim}`);
+        if (!res.ok){
+          if ([413,502,503,504].includes(res.status)) continue; // degradar
+          $out.textContent = `error HTTP ${res.status}`;
+          return;
+        }
+        const raw = await res.json();
+        const rows = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.rows) ? raw.rows : []);
+
+        // Ordenar por ts DESC (más nuevo primero) SIN modificar el contenido
+        const sorted = rows.slice().sort((a,b)=>{
+          const at = tsToMs(a && a.ts); const bt = tsToMs(b && b.ts);
+          const ax = Number.isFinite(at) ? at : -Infinity;
+          const bx = Number.isFinite(bt) ? bt : -Infinity;
+          return bx - ax;
+        });
+
+        // Dump tal cual (una fila por línea)
+        $out.textContent = sorted.map(r => JSON.stringify(r)).join('\n');
+        return;
+      }catch(_e){ /* degradar y seguir */ }
+    }
+    document.getElementById('out').textContent = 'no se pudo cargar /ticks/recent con degradación';
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>

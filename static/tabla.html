@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Permissions-Policy" content="interest-cohort=()">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tabla de Cotizaciones • AL30 / GD30 / Ratio</title>
+  <style>
+    :root{
+      --bg:#0e1116; --panel:#141a25; --muted:#9aa4b2; --text:#e6edf3; --border:#202636;
+      --chip:#0b0f18; --chip-bd:#273043; --accent:#4aa3ff;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,"Noto Sans";}
+    header{display:flex;gap:1rem;align-items:center;flex-wrap:wrap;padding:.9rem 1rem;border-bottom:1px solid var(--border);
+      background:linear-gradient(180deg,#0f141f,#0c1018)}
+    h1{font-size:16px;margin:0;color:#c5cfde;letter-spacing:.3px}
+    .toolbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+    .btn{border:1px solid var(--chip-bd);background:var(--chip);color:var(--text);padding:.38rem .6rem;border-radius:.5rem;cursor:pointer;font-weight:600;font-size:12px}
+    .btn:hover{border-color:#3a4661}
+    .pill{padding:.2rem .5rem;border:1px solid var(--chip-bd);border-radius:999px;background:var(--chip);color:#cbd5e1;font-size:12px}
+    .input,.select{background:#0b0f18;border:1px solid #222b3f;color:#d1dcf4;border-radius:6px;padding:.35rem .5rem}
+    main{padding:12px}
+    .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px}
+    .warn{color:#ffd166}.err{color:#ff7b7b}.ok{color:#79e0a2}
+    .topline{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+    .grow{flex:1}
+    table{width:100%;border-collapse:collapse}
+    thead th{position:sticky;top:0;background:#121826;border-bottom:1px solid var(--border);padding:.5rem .5rem;text-align:right;color:#c9d3e7;font-weight:700}
+    thead th:first-child, tbody td:first-child{text-align:left}
+    tbody td{border-bottom:1px dashed #223049;padding:.45rem .5rem;text-align:right;color:#dfe7f6;white-space:nowrap}
+    tbody tr:hover{background:#0f141f}
+    .muted{color:#9aa4b2}
+    .footer{display:flex;justify-content:space-between;align-items:center;gap:.75rem;padding-top:8px}
+    .kbd{font-family:ui-monospace,Menlo,Consolas,monospace;background:#0b0f18;border:1px solid #222b3f;border-radius:6px;padding:.1rem .35rem;color:#d1dcf4}
+    @media (max-width:900px){ thead th:nth-child(3), thead th:nth-child(4), thead th:nth-child(6), tbody td:nth-child(3), tbody td:nth-child(4), tbody td:nth-child(6){display:none} }
+    #diag{margin-top:6px; font-size:12px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Tabla de Cotizaciones — AL30 / GD30 / Ratio</h1>
+    <div class="toolbar">
+      <button class="btn" id="btnReload">Recargar</button>
+      <button class="btn" id="btnExport">Exportar CSV</button>
+      <label class="pill"><input type="checkbox" id="chkSession" checked> Filtrar horario (10:30–17:00 ART)</label>
+      <label class="pill"> Página
+        <select id="selPage" class="select"></select>
+      </label>
+      <label class="pill"> Filas/página
+        <select id="selPageSize" class="select">
+          <option>200</option><option selected>500</option><option>1000</option><option>2000</option><option>5000</option>
+        </select>
+      </label>
+      <span class="pill" id="lblCount">0 filas</span>
+    </div>
+    <div class="toolbar">
+      <input id="q" class="input" placeholder="Buscar (source, HH:mm, dd/MM)…" size="28"/>
+      <span class="muted">Tip: <span class="kbd">12:3</span> → 12:30–12:39 • <span class="kbd">02/09</span> → ese día.</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="panel">
+      <div class="topline">
+        <div class="grow">
+          <div id="summary" class="muted">Cargando…</div>
+          <div id="range" class="muted"></div>
+          <div id="note" class="warn"></div>
+          <div id="diag" class="ok"></div>
+        </div>
+      </div>
+      <div style="max-width:100%; overflow:auto;">
+        <table id="tbl">
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Hora (ART)</th>
+              <th>AL30</th>
+              <th>GD30</th>
+              <th>Ratio</th>
+              <th>Source</th>
+              <th>Bid/Ask AL30</th>
+              <th>Bid/Ask GD30</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="footer">
+        <div id="footInfo" class="muted">—</div>
+        <div> Navegar: <span class="kbd">←</span><span class="kbd">→</span> • Buscar: <span class="kbd">/</span> </div>
+      </div>
+    </div>
+  </main>
+
+<script>
+/* ===== Prefijo opcional (por si la app corre bajo /algo) ===== */
+const API_BASE = (() => {
+  const p = location.pathname; const i = p.indexOf('/static/');
+  return i >= 0 ? p.slice(0, i) : '';
+})();
+function api(path){ return `${API_BASE}${path}`; }
+
+/* ===== Config ===== */
+const MARKET_TZ='America/Argentina/Buenos_Aires';
+const SESSION_OPEN_H=10, SESSION_OPEN_M=30;   // 10:30
+const SESSION_CLOSE_H=17, SESSION_CLOSE_M=0;  // 17:00
+const SESSION_DAYS=new Set([1,2,3,4,5]);      // lun..vie
+const LIMITS=[1_000_000,300_000,100_000];
+
+/* ===== Helpers ===== */
+const $=s=>document.querySelector(s);
+const fmtNum=(v,d=2)=>Number.isFinite(v)?v.toLocaleString('es-AR',{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
+const dtfDate=new Intl.DateTimeFormat('es-AR',{timeZone:MARKET_TZ,day:'2-digit',month:'2-digit',year:'numeric'});
+const dtfTime=new Intl.DateTimeFormat('es-AR',{timeZone:MARKET_TZ,hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+function fetchWithTimeout(url, ms=60000){
+  const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),ms);
+  return fetch(url,{signal:ctrl.signal}).finally(()=>clearTimeout(t));
+}
+// Partes ART y sesión
+function partsART(date=new Date()){
+  const p=new Intl.DateTimeFormat('es-AR',{timeZone:MARKET_TZ,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',weekday:'short',hour12:false})
+    .formatToParts(date).reduce((a,x)=>{a[x.type]=x.value;return a;},{});
+  const w={lun:1,mar:2,mié:3,jue:4,vie:5,sáb:6,dom:0};
+  return {year:+p.year,month:+p.month,day:+p.day,hour:+p.hour,minute:+p.minute,weekday:w[p.weekday]??0};
+}
+function isInsideSessionART(ms){
+  const {weekday,hour,minute}=partsART(new Date(ms));
+  if(!SESSION_DAYS.has(weekday)) return false;
+  const m=hour*60+minute;
+  const open=SESSION_OPEN_H*60+SESSION_OPEN_M, close=SESSION_CLOSE_H*60+SESSION_CLOSE_M;
+  return m>=open && m<close;
+}
+// Parseo robusto de timestamps
+function parseTs(ts){
+  if(ts==null) return NaN;
+  if(typeof ts==='number') return ts<1e12?Math.round(ts*1000):Math.round(ts);
+  if(typeof ts==='string'){
+    let s=ts.trim();
+    if(/^\d{13}$/.test(s)) return +s;
+    if(/^\d{10}$/.test(s)) return +s*1000;
+    if(/^\d+(\.\d+)?$/.test(s)){ const n=Number(s); return n<1e12?Math.round(n*1000):Math.round(n); }
+    if(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/.test(s)) s=s.replace(' ','T');
+    const hasTZ=/[zZ]|[+\-]\d\d:\d\d$/.test(s);
+    if(!hasTZ){ if(!s.includes('T')) s+='T00:00:00'; s+='-03:00'; }
+    const t=Date.parse(s); return Number.isFinite(t)?t:NaN;
+  }
+  return NaN;
+}
+
+/* ===== Parseo robusto de precios + normalización de escala ===== */
+// Acepta "72.339,23", "78,420.00", "78.42", "78420", etc.
+function parsePriceAny(v){
+  if (v == null) return NaN;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
+  let s = String(v).trim();
+  if (!s) return NaN;
+
+  if (/^\d{1,}$/.test(s)) return Number(s);                 // "78420"
+  if (/^\d+\.\d+$/.test(s)) return Number(s);               // "78.42"
+  if (/^\d+,\d+$/.test(s))  return Number(s.replace(',','.')); // "78,42"
+
+  const lastDot = s.lastIndexOf('.');
+  const lastCom = s.lastIndexOf(',');
+  let decSep = null, thouSep = null;
+  if (lastDot >= 0 || lastCom >= 0){
+    if (lastDot > lastCom){ decSep='.'; thouSep=','; }
+    else                  { decSep=','; thouSep='.'; }
+  }
+  if (decSep){
+    const reThou = new RegExp('\\' + thouSep, 'g');
+    s = s.replace(reThou, '');
+    if (decSep === ',') s = s.replace(',', '.');
+    const n = Number(s);
+    return Number.isFinite(n) ? n : NaN;
+  }
+  s = s.replace(/[^\d\.,-]/g,'');
+  if (s.includes(',') && !s.includes('.')) s = s.replace(',', '.');
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+// Si AL30 y GD30 vienen "inflados" (≫1000) pero el ratio luce razonable, dividir ×1000
+function normalizeScale(al, gd){
+  if (!Number.isFinite(al) || !Number.isFinite(gd)) return [al, gd, false];
+  const ratio = gd > 0 ? al / gd : NaN;
+  const looksBig = (al >= 1000 && gd >= 1000);
+  const ratioOk = ratio > 0.5 && ratio < 2.0;
+  if (looksBig && ratioOk) return [al/1000, gd/1000, true];
+  return [al, gd, false];
+}
+
+/* ===== Estado ===== */
+let RAW=[], VIEW=[], pageSize=500, page=1;
+let scaledCount=0, outSessionCount=0;
+
+/* ===== UI ===== */
+function setCounts(){
+  $('#lblCount').textContent=`${VIEW.length.toLocaleString('es-AR')} filas`;
+  const pages=Math.max(1,Math.ceil(VIEW.length/pageSize));
+  const sel=$('#selPage'); const old=sel.value;
+  sel.innerHTML=''; for(let i=1;i<=pages;i++){ const o=document.createElement('option'); o.value=String(i); o.textContent=`${i}/${pages}`; sel.appendChild(o); }
+  sel.value = Math.min(Number(old||1), pages);
+}
+function renderSummary(){
+  if(!RAW.length){ $('#summary').textContent='Sin filas.'; $('#range').textContent=''; $('#diag').textContent=''; return; }
+  const tsMin=RAW[0].ts, tsMax=RAW[RAW.length-1].ts;
+  $('#summary').textContent=`Histórico: ${RAW.length.toLocaleString('es-AR')} filas (ASC)`;
+  $('#range').textContent=`Rango: ${dtfDate.format(tsMin)} ${dtfTime.format(tsMin)} → ${dtfDate.format(tsMax)} ${dtfTime.format(tsMax)}`;
+  const msgs=[];
+  if(scaledCount>0) msgs.push(`Normalizadas ${scaledCount.toLocaleString('es-AR')} filas (÷1000) por escala anómala`);
+  if(outSessionCount>0 && $('#chkSession').checked) msgs.push(`Descartadas ${outSessionCount.toLocaleString('es-AR')} filas fuera de 10:30–17:00`);
+  $('#diag').textContent = msgs.join(' • ');
+}
+function renderTable(){
+  const tb=$('#tbl tbody'); tb.innerHTML='';
+  const start=(page-1)*pageSize, end=Math.min(start+pageSize,VIEW.length);
+  for(let i=start;i<end;i++){
+    const r=VIEW[i];
+    const date=dtfDate.format(r.ts), time=dtfTime.format(r.ts);
+    const ratio=Number.isFinite(r.ratio)?r.ratio:(r.al30>0&&r.gd30>0 ? r.al30/r.gd30 : NaN);
+    const biA=Number.isFinite(r.bi_al30)?r.bi_al30:(r.book_al30?.bids?.[0]?.[0]??NaN);
+    const ofA=Number.isFinite(r.of_al30)?r.of_al30:(r.book_al30?.asks?.[0]?.[0]??NaN);
+    const biG=Number.isFinite(r.bi_gd30)?r.bi_gd30:(r.book_gd30?.bids?.[0]?.[0]??NaN);
+    const ofG=Number.isFinite(r.of_gd30)?r.of_gd30:(r.book_gd30?.asks?.[0]?.[0]??NaN);
+    const tr=document.createElement('tr');
+    tr.innerHTML=`
+      <td>${date}</td>
+      <td>${time}</td>
+      <td>${fmtNum(r.al30,2)}</td>
+      <td>${fmtNum(r.gd30,2)}</td>
+      <td>${fmtNum(ratio,6)}</td>
+      <td class="muted">${r.source??'—'}</td>
+      <td>${Number.isFinite(biA)||Number.isFinite(ofA)?`${fmtNum(biA,2)} / ${fmtNum(ofA,2)}`:'—'}</td>
+      <td>${Number.isFinite(biG)||Number.isFinite(ofG)?`${fmtNum(biG,2)} / ${fmtNum(ofG,2)}`:'—'}</td>`;
+    tb.appendChild(tr);
+  }
+  setCounts();
+  $('#footInfo').textContent=`Mostrando ${start+1}–${end} de ${VIEW.length.toLocaleString('es-AR')} • API_BASE="${API_BASE||'/'}"`;
+}
+function applyFilters(){
+  const q=$('#q').value.trim().toLowerCase();
+  const inSession=$('#chkSession').checked;
+  VIEW = RAW.filter(r=>{
+    if(inSession && !isInsideSessionART(r.ts)) return false;
+    if(!q) return true;
+    const date=dtfDate.format(r.ts), time=dtfTime.format(r.ts), src=(r.source??'').toLowerCase();
+    return date.includes(q)||time.includes(q)||src.includes(q);
+  });
+  page=1; renderTable(); renderSummary();
+}
+
+/* ===== Libros ===== */
+function numOrNaN(v){ const n=Number(v); return Number.isFinite(n)?n:NaN; }
+function parseBook(bk){
+  if(!bk) return null;
+  if(typeof bk==='string'){ try{ bk=JSON.parse(bk); }catch(_){ return null; } }
+  if(!bk||!Array.isArray(bk.bids)||!Array.isArray(bk.asks)) return null;
+  return {bids:bk.bids.slice(0,5).map(p=>[Number(p[0]),Number(p[1])]),
+          asks:bk.asks.slice(0,5).map(p=>[Number(p[0]),Number(p[1])])};
+}
+
+/* ===== Carga con degradación ===== */
+async function loadAll(){
+  $('#note').textContent=''; $('#diag').textContent=''; RAW=[]; VIEW=[]; scaledCount=0; outSessionCount=0;
+
+  // sanity /health (no obligatorio)
+  try{
+    const h=await fetchWithTimeout(api('/health'),8000);
+    if(!h.ok){ $('#note').textContent=`/health → HTTP ${h.status}`; }
+  }catch(_){ /* ignore */ }
+
+  let rows=null, used=null, lastErr=null, lastStatus=null, lastBody='';
+  for(const L of LIMITS){
+    try{
+      const r=await fetchWithTimeout(api(`/ticks/recent?limit=${L}`),60000);
+      lastStatus=r.status;
+      if(!r.ok){ try{ lastBody=await r.text(); }catch(_){ } throw new Error(`HTTP ${r.status}`); }
+      rows=await r.json();
+      if(!Array.isArray(rows)) throw new Error('Formato inesperado');
+      used=L; break;
+    }catch(e){ lastErr=e; }
+  }
+  if(!rows){
+    $('#summary').textContent='Error al cargar /ticks/recent';
+    $('#diag').className='err';
+    $('#diag').innerHTML = `Respuesta del servidor: <b>HTTP ${lastStatus??'?'}</b><br><code>${(lastBody||String(lastErr)).toString().slice(0,500)}</code>`;
+    return;
+  }
+
+  // Normalizar + ordenar (ASC)
+  RAW = rows.map(r=>{
+    const ts = parseTs(r.ts);
+    let al = parsePriceAny(r.al30);
+    let gd = parsePriceAny(r.gd30);
+    let raRaw = parsePriceAny(r.ratio);
+
+    // Normalización de escala si ambos >>1000 y ratio razonable
+    const [alN, gdN, scaled] = normalizeScale(al, gd);
+    if (scaled) scaledCount++;
+    al = alN; gd = gdN;
+
+    // Ratio final
+    const ra = Number.isFinite(raRaw) ? raRaw : (Number.isFinite(al)&&Number.isFinite(gd)&&gd>0 ? al/gd : NaN);
+
+    // Libros opcionales
+    const bA = parseBook(r.book_al30);
+    const bG = parseBook(r.book_gd30);
+
+    return {
+      ts,
+      al30: Number.isFinite(al) ? al : NaN,
+      gd30: Number.isFinite(gd) ? gd : NaN,
+      ratio: Number.isFinite(ra) ? ra : NaN,
+      source: r.source,
+      bi_al30: numOrNaN(r.bi_al30),
+      of_al30: numOrNaN(r.of_al30),
+      bi_gd30: numOrNaN(r.bi_gd30),
+      of_gd30: numOrNaN(r.of_gd30),
+      book_al30: bA, book_gd30: bG
+    };
+  }).filter(o=>Number.isFinite(o.ts)).sort((a,b)=>a.ts-b.ts);
+
+  // Contabilizar cuántas fuera de sesión hay (informativo)
+  outSessionCount = RAW.reduce((a,r)=> a + (isInsideSessionART(r.ts) ? 0 : 1), 0);
+
+  $('#note').textContent = `limit usado: ${used.toLocaleString('en-US')} • filas recibidas: ${rows.length.toLocaleString('es-AR')}`;
+  renderSummary(); applyFilters();
+}
+
+/* ===== Export CSV ===== */
+function exportCSV(){
+  if(!VIEW.length){ alert('No hay datos para exportar.'); return; }
+  const header=['fecha','hora_art','al30','gd30','ratio','source','bi_al30','of_al30','bi_gd30','of_gd30'];
+  const lines=[header.join(',')];
+  for(const r of VIEW){
+    const ratio=Number.isFinite(r.ratio)?r.ratio:(r.al30>0&&r.gd30>0?r.al30/r.gd30:NaN);
+    lines.push([
+      dtfDate.format(r.ts), dtfTime.format(r.ts),
+      Number.isFinite(r.al30)?r.al30:'', Number.isFinite(r.gd30)?r.gd30:'',
+      Number.isFinite(ratio)?ratio:'', r.source??'',
+      Number.isFinite(r.bi_al30)?r.bi_al30:'', Number.isFinite(r.of_al30)?r.of_al30:'',
+      Number.isFinite(r.bi_gd30)?r.bi_gd30:'', Number.isFinite(r.of_gd30)?r.of_gd30:''
+    ].join(','));
+  }
+  const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download='cotizaciones_al30_gd30.csv'; a.click(); URL.revokeObjectURL(url);
+}
+
+/* ===== Eventos ===== */
+$('#btnReload').addEventListener('click', loadAll);
+$('#btnExport').addEventListener('click', exportCSV);
+$('#selPageSize').addEventListener('change', e=>{ pageSize=parseInt(e.target.value,10)||500; page=1; renderTable(); });
+$('#selPage').addEventListener('change', e=>{ page=parseInt(e.target.value,10)||1; renderTable(); });
+$('#chkSession').addEventListener('change', applyFilters);
+$('#q').addEventListener('keydown', e=>{ if(e.key==='Enter') applyFilters(); });
+window.addEventListener('keydown', e=>{
+  if(e.key==='/' && document.activeElement!==$('#q')){ e.preventDefault(); $('#q').focus(); }
+  if(e.key==='ArrowRight'){ const pages=Math.max(1,Math.ceil(VIEW.length/pageSize)); if(page<pages){ page++; $('#selPage').value=String(page); renderTable(); } }
+  if(e.key==='ArrowLeft'){ if(page>1){ page--; $('#selPage').value=String(page); renderTable(); } }
+});
+
+/* ===== Arranque ===== */
+loadAll();
+</script>
+</body>
+</html>
