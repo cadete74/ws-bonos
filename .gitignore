@@ -1,0 +1,15 @@
+# --- Local runtime (no subir) ---
+data/*.sqlite3
+data/*.db
+*.sqlite3
+*.log
+veta.cookies
+
+# Python / build
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# macOS
+.DS_Store
