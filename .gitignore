@@ -1,9 +1,25 @@
-# --- Local runtime (no subir) ---
+# Local runtime (no subir)
 data/*.sqlite3
 data/*.db
+data/*.sqlite3-shm
+data/*.sqlite3-wal
 *.sqlite3
 *.log
 veta.cookies
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# Backups & archives
+*.bak
+*.bak.*
+backups/
+_archive/
+
+# Data exports
+*.csv
 
 # Python / build
 __pycache__/
