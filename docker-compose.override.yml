@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    command: python -u /app/ingestor.py
+    command: python -m ingestors.runner
     volumes:
       - ./data:/app/data
     networks:

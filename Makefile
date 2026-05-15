@@ -1,22 +1,17 @@
-# Auto-load .env if present (Veta creds and other config live there).
-# Shell env vars still take precedence per GNU make rules.
-ifneq (,$(wildcard ./.env))
-    include .env
-    export
-endif
+# Auto-load .env via shell sourcing (NOT `include .env`).
+# GNU make treats `#` as comment, which corrupts values like passwords with `#`.
+# Bash sourcing handles `#` correctly inside a value when there's no space before it.
+LOAD_ENV := if [ -f ./.env ]; then set -a; . ./.env; set +a; fi;
 
 DB := $(PWD)/data/wsbonos.sqlite3
 
-.PHONY: api ingest-once ingest-loop health docker-up docker-down docker-logs
+.PHONY: api ingest-stream health docker-up docker-down docker-logs
 
 api:
-	@DB_PATH="$(DB)" python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8010 --reload
+	@$(LOAD_ENV) DB_PATH="$(DB)" python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8010 --reload
 
-ingest-once:
-	@DB_PATH="$(DB)" python3 -m ingestors.runner --once
-
-ingest-loop:
-	@DB_PATH="$(DB)" bash -lc 'while :; do python3 -m ingestors.runner --once || true; sleep 10; done'
+ingest-stream:
+	@$(LOAD_ENV) DB_PATH="$(DB)" python3 -m ingestors.runner
 
 health:
 	@curl -sS http://127.0.0.1:8010/health && echo
