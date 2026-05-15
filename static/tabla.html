@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta http-equiv="Permissions-Policy" content="interest-cohort=()">
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tabla de Cotizaciones • AL30 / GD30 / Ratio</title>
+  <title>Tabla de Cotizaciones</title>
   <style>
     :root{
       --bg:#0e1116; --panel:#141a25; --muted:#9aa4b2; --text:#e6edf3; --border:#202636;
@@ -35,11 +35,17 @@
     .kbd{font-family:ui-monospace,Menlo,Consolas,monospace;background:#0b0f18;border:1px solid #222b3f;border-radius:6px;padding:.1rem .35rem;color:#d1dcf4}
     @media (max-width:900px){ thead th:nth-child(3), thead th:nth-child(4), thead th:nth-child(6), tbody td:nth-child(3), tbody td:nth-child(4), tbody td:nth-child(6){display:none} }
     #diag{margin-top:6px; font-size:12px}
+
+    /* Tab navigation */
+    #tabNav{display:flex;gap:.4rem;flex-wrap:wrap;padding:.6rem 1rem;border-bottom:1px solid var(--border);background:#0c1018}
+    .tab-btn{border:1px solid var(--chip-bd);background:var(--chip);color:#9aa4b2;padding:.35rem .75rem;border-radius:.5rem;cursor:pointer;font-weight:600;font-size:12px;transition:color .15s,border-color .15s}
+    .tab-btn:hover{border-color:#3a4661;color:#c5cfde}
+    .tab-btn.active{border-color:var(--accent);color:var(--accent);background:#0b0f18}
   </style>
 </head>
 <body>
   <header>
-    <h1>Tabla de Cotizaciones — AL30 / GD30 / Ratio</h1>
+    <h1 id="pageTitle">Tabla de Cotizaciones</h1>
     <div class="toolbar">
       <button class="btn" id="btnReload">Recargar</button>
       <label class="pill"><input type="checkbox" id="chkAuto" checked> Auto 5s</label>
@@ -61,6 +67,9 @@
     </div>
   </header>
 
+  <!-- Tab navigation — populated dynamically from /config/pairs -->
+  <nav id="tabNav"></nav>
+
   <main>
     <div class="panel" style="margin-bottom:12px">
       <div class="topline">
@@ -80,20 +89,7 @@
       </div>
       <div style="max-width:100%; overflow:auto;">
         <table id="tbl">
-          <thead>
-            <tr>
-              <th>Fecha</th>
-              <th>Hora (ART)</th>
-              <th>AL30</th>
-              <th>GD30</th>
-              <th>Ratio</th>
-              <th>Source</th>
-              <th>Bid/Ask AL30</th>
-              <th>Bid/Ask GD30</th>
-              <th>Vol AL30</th>
-              <th>Vol GD30</th>
-            </tr>
-          </thead>
+          <thead id="tblHead"><tr></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -105,7 +101,7 @@
   </main>
 
 <script>
-/* ===== Prefijo opcional (por si la app corre bajo /algo) ===== */
+/* ===== API base prefix ===== */
 const API_BASE = (() => {
   const p = location.pathname; const i = p.indexOf('/static/');
   return i >= 0 ? p.slice(0, i) : '';
@@ -114,21 +110,28 @@ function api(path){ return `${API_BASE}${path}`; }
 
 /* ===== Config ===== */
 const MARKET_TZ='America/Argentina/Buenos_Aires';
-const SESSION_OPEN_H=10, SESSION_OPEN_M=30;   // 10:30
-const SESSION_CLOSE_H=17, SESSION_CLOSE_M=0;  // 17:00
-const SESSION_DAYS=new Set([1,2,3,4,5]);      // lun..vie
+const SESSION_OPEN_H=10, SESSION_OPEN_M=30;
+const SESSION_CLOSE_H=17, SESSION_CLOSE_M=0;
+const SESSION_DAYS=new Set([1,2,3,4,5]);
 const LIMITS=[1000,500,100];
+
+/* ===== State ===== */
+let PAIRS = [];          // [{id, label, leg_a:{base}, leg_b:{base}}]
+let activePair = null;   // currently selected pair object
+let RAW=[], VIEW=[], pageSize=500, page=1;
+let scaledCount=0, outSessionCount=0;
 
 /* ===== Helpers ===== */
 const $=s=>document.querySelector(s);
 const fmtNum=(v,d=2)=>Number.isFinite(v)?v.toLocaleString('es-AR',{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
 const dtfDate=new Intl.DateTimeFormat('es-AR',{timeZone:MARKET_TZ,day:'2-digit',month:'2-digit',year:'numeric'});
 const dtfTime=new Intl.DateTimeFormat('es-AR',{timeZone:MARKET_TZ,hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+
 function fetchWithTimeout(url, ms=60000){
   const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),ms);
   return fetch(url,{signal:ctrl.signal}).finally(()=>clearTimeout(t));
 }
-// Partes ART y sesión
+
 function partsART(date=new Date()){
   const p=new Intl.DateTimeFormat('es-AR',{timeZone:MARKET_TZ,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',weekday:'short',hour12:false})
     .formatToParts(date).reduce((a,x)=>{a[x.type]=x.value;return a;},{});
@@ -142,7 +145,7 @@ function isInsideSessionART(ms){
   const open=SESSION_OPEN_H*60+SESSION_OPEN_M, close=SESSION_CLOSE_H*60+SESSION_CLOSE_M;
   return m>=open && m<close;
 }
-// Parseo robusto de timestamps
+
 function parseTs(ts){
   if(ts==null) return NaN;
   if(typeof ts==='number') return ts<1e12?Math.round(ts*1000):Math.round(ts);
@@ -159,249 +162,246 @@ function parseTs(ts){
   return NaN;
 }
 
-/* ===== Parseo robusto de precios + normalización de escala ===== */
-// Acepta "72.339,23", "78,420.00", "78.42", "78420", etc.
+/* ===== Price parsing + scale normalization ===== */
 function parsePriceAny(v){
-  if (v == null) return NaN;
-  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
-  let s = String(v).trim();
-  if (!s) return NaN;
-
-  if (/^\d{1,}$/.test(s)) return Number(s);                 // "78420"
-  if (/^\d+\.\d+$/.test(s)) return Number(s);               // "78.42"
-  if (/^\d+,\d+$/.test(s))  return Number(s.replace(',','.')); // "78,42"
-
-  const lastDot = s.lastIndexOf('.');
-  const lastCom = s.lastIndexOf(',');
-  let decSep = null, thouSep = null;
-  if (lastDot >= 0 || lastCom >= 0){
-    if (lastDot > lastCom){ decSep='.'; thouSep=','; }
-    else                  { decSep=','; thouSep='.'; }
+  if(v==null) return NaN;
+  if(typeof v==='number') return Number.isFinite(v)?v:NaN;
+  let s=String(v).trim();
+  if(!s) return NaN;
+  if(/^\d{1,}$/.test(s)) return Number(s);
+  if(/^\d+\.\d+$/.test(s)) return Number(s);
+  if(/^\d+,\d+$/.test(s)) return Number(s.replace(',','.'));
+  const lastDot=s.lastIndexOf('.');
+  const lastCom=s.lastIndexOf(',');
+  let decSep=null, thouSep=null;
+  if(lastDot>=0||lastCom>=0){
+    if(lastDot>lastCom){decSep='.';thouSep=',';}
+    else{decSep=',';thouSep='.';}
   }
-  if (decSep){
-    const reThou = new RegExp('\\' + thouSep, 'g');
-    s = s.replace(reThou, '');
-    if (decSep === ',') s = s.replace(',', '.');
-    const n = Number(s);
-    return Number.isFinite(n) ? n : NaN;
+  if(decSep){
+    const reThou=new RegExp('\\'+thouSep,'g');
+    s=s.replace(reThou,'');
+    if(decSep===',') s=s.replace(',','.');
+    const n=Number(s); return Number.isFinite(n)?n:NaN;
   }
-  s = s.replace(/[^\d\.,-]/g,'');
-  if (s.includes(',') && !s.includes('.')) s = s.replace(',', '.');
-  const n = Number(s);
-  return Number.isFinite(n) ? n : NaN;
+  s=s.replace(/[^\d\.,-]/g,'');
+  if(s.includes(',')&&!s.includes('.')) s=s.replace(',','.');
+  const n=Number(s); return Number.isFinite(n)?n:NaN;
 }
 
-// Si AL30 y GD30 vienen "inflados" (≫1000) pero el ratio luce razonable, dividir ×1000
-function normalizeScale(al, gd){
-  if (!Number.isFinite(al) || !Number.isFinite(gd)) return [al, gd, false];
-  const ratio = gd > 0 ? al / gd : NaN;
-  const looksBig = (al >= 1000 && gd >= 1000);
-  const ratioOk = ratio > 0.5 && ratio < 2.0;
-  if (looksBig && ratioOk) return [al/1000, gd/1000, true];
-  return [al, gd, false];
+function normalizeScale(a, b){
+  if(!Number.isFinite(a)||!Number.isFinite(b)) return [a,b,false];
+  const ratio=b>0?a/b:NaN;
+  const looksBig=(a>=1000&&b>=1000);
+  const ratioOk=ratio>0.5&&ratio<2.0;
+  if(looksBig&&ratioOk) return [a/1000,b/1000,true];
+  return [a,b,false];
 }
 
-/* ===== Estado ===== */
-let RAW=[], VIEW=[], pageSize=500, page=1;
-let scaledCount=0, outSessionCount=0;
+/* ===== Tab navigation ===== */
+function buildTabs(pairs){
+  const nav=$('#tabNav');
+  nav.innerHTML='';
+  for(const p of pairs){
+    const btn=document.createElement('button');
+    btn.className='tab-btn';
+    btn.textContent=p.label;
+    btn.dataset.pairId=p.id;
+    btn.addEventListener('click',()=>switchPair(p));
+    nav.appendChild(btn);
+  }
+}
 
-/* ===== UI ===== */
+function setActiveTab(pairId){
+  document.querySelectorAll('.tab-btn').forEach(btn=>{
+    btn.classList.toggle('active', btn.dataset.pairId===pairId);
+  });
+}
+
+function switchPair(pair){
+  if(activePair && activePair.id===pair.id) return;
+  activePair=pair;
+  setActiveTab(pair.id);
+  $('#pageTitle').textContent=`Tabla de Cotizaciones — ${pair.label} / Ratio`;
+  renderHeaders(pair);
+  RAW=[]; VIEW=[]; scaledCount=0; outSessionCount=0;
+  $('#summary').textContent='Cargando…';
+  $('#range').textContent='';
+  $('#note').textContent='';
+  $('#diag').textContent='';
+  $('#tbl tbody').innerHTML='';
+  loadAll(pair);
+  refreshLive(pair);
+}
+
+/* ===== Table headers ===== */
+function renderHeaders(pair){
+  const legA=pair.leg_a.base;
+  const legB=pair.leg_b.base;
+  const tr=$('#tblHead tr');
+  tr.innerHTML=`
+    <th>Fecha</th>
+    <th>Hora (ART)</th>
+    <th>${legA}</th>
+    <th>${legB}</th>
+    <th>Ratio</th>
+    <th>Source</th>
+    <th>Bid/Ask ${legA}</th>
+    <th>Bid/Ask ${legB}</th>
+    <th>Vol ${legA}</th>
+    <th>Vol ${legB}</th>`;
+}
+
+/* ===== UI helpers ===== */
 function setCounts(){
   $('#lblCount').textContent=`${VIEW.length.toLocaleString('es-AR')} filas`;
   const pages=Math.max(1,Math.ceil(VIEW.length/pageSize));
   const sel=$('#selPage'); const old=sel.value;
-  sel.innerHTML=''; for(let i=1;i<=pages;i++){ const o=document.createElement('option'); o.value=String(i); o.textContent=`${i}/${pages}`; sel.appendChild(o); }
-  sel.value = Math.min(Number(old||1), pages);
+  sel.innerHTML=''; for(let i=1;i<=pages;i++){const o=document.createElement('option');o.value=String(i);o.textContent=`${i}/${pages}`;sel.appendChild(o);}
+  sel.value=Math.min(Number(old||1),pages);
 }
+
 function renderSummary(){
-  if(!RAW.length){ $('#summary').textContent='Sin filas.'; $('#range').textContent=''; $('#diag').textContent=''; return; }
+  if(!RAW.length){$('#summary').textContent='Sin filas.';$('#range').textContent='';$('#diag').textContent='';return;}
   const tsMin=RAW[RAW.length-1].ts, tsMax=RAW[0].ts;
   $('#summary').textContent=`Histórico: ${RAW.length.toLocaleString('es-AR')} filas (DESC)`;
   $('#range').textContent=`Rango: ${dtfDate.format(tsMin)} ${dtfTime.format(tsMin)} → ${dtfDate.format(tsMax)} ${dtfTime.format(tsMax)}`;
   const msgs=[];
   if(scaledCount>0) msgs.push(`Normalizadas ${scaledCount.toLocaleString('es-AR')} filas (÷1000) por escala anómala`);
-  if(outSessionCount>0 && $('#chkSession').checked) msgs.push(`Descartadas ${outSessionCount.toLocaleString('es-AR')} filas fuera de 10:30–17:00`);
-  $('#diag').textContent = msgs.join(' • ');
+  if(outSessionCount>0&&$('#chkSession').checked) msgs.push(`Descartadas ${outSessionCount.toLocaleString('es-AR')} filas fuera de 10:30–17:00`);
+  $('#diag').textContent=msgs.join(' • ');
 }
-function renderTable(){
+
+function renderTable(pair){
+  if(!pair) return;
+  const legA=pair.leg_a.base;
+  const legB=pair.leg_b.base;
   const tb=$('#tbl tbody'); tb.innerHTML='';
   const start=(page-1)*pageSize, end=Math.min(start+pageSize,VIEW.length);
   for(let i=start;i<end;i++){
     const r=VIEW[i];
     const date=dtfDate.format(r.ts), time=dtfTime.format(r.ts);
-    const ratio=Number.isFinite(r.ratio)?r.ratio:(r.al30>0&&r.gd30>0 ? r.al30/r.gd30 : NaN);
-    const biA=Number.isFinite(r.bi_al30)?r.bi_al30:(r.book_al30?.bids?.[0]?.[0]??NaN);
-    const ofA=Number.isFinite(r.of_al30)?r.of_al30:(r.book_al30?.asks?.[0]?.[0]??NaN);
-    const biG=Number.isFinite(r.bi_gd30)?r.bi_gd30:(r.book_gd30?.bids?.[0]?.[0]??NaN);
-    const ofG=Number.isFinite(r.of_gd30)?r.of_gd30:(r.book_gd30?.asks?.[0]?.[0]??NaN);
+    const ratio=Number.isFinite(r.ratio)?r.ratio:(r.last_a>0&&r.last_b>0?r.last_a/r.last_b:NaN);
     const tr=document.createElement('tr');
     tr.innerHTML=`
       <td>${date}</td>
       <td>${time}</td>
-      <td>${fmtNum(r.al30,2)}</td>
-      <td>${fmtNum(r.gd30,2)}</td>
+      <td>${fmtNum(r.last_a,2)}</td>
+      <td>${fmtNum(r.last_b,2)}</td>
       <td>${fmtNum(ratio,6)}</td>
       <td class="muted">${r.source??'—'}</td>
-      <td>${Number.isFinite(biA)||Number.isFinite(ofA)?`${fmtNum(biA,2)} / ${fmtNum(ofA,2)}`:'—'}</td>
-      <td>${Number.isFinite(biG)||Number.isFinite(ofG)?`${fmtNum(biG,2)} / ${fmtNum(ofG,2)}`:'—'}</td>
-      <td>${Number.isFinite(r.vol_al30)?fmtNum(r.vol_al30,0):'—'}</td>
-      <td>${Number.isFinite(r.vol_gd30)?fmtNum(r.vol_gd30,0):'—'}</td>`;
+      <td>${Number.isFinite(r.bid_a)||Number.isFinite(r.ask_a)?`${fmtNum(r.bid_a,2)} / ${fmtNum(r.ask_a,2)}`:'—'}</td>
+      <td>${Number.isFinite(r.bid_b)||Number.isFinite(r.ask_b)?`${fmtNum(r.bid_b,2)} / ${fmtNum(r.ask_b,2)}`:'—'}</td>
+      <td>${Number.isFinite(r.vol_a)?fmtNum(r.vol_a,0):'—'}</td>
+      <td>${Number.isFinite(r.vol_b)?fmtNum(r.vol_b,0):'—'}</td>`;
     tb.appendChild(tr);
   }
   setCounts();
   $('#footInfo').textContent=`Mostrando ${start+1}–${end} de ${VIEW.length.toLocaleString('es-AR')} • API_BASE="${API_BASE||'/'}"`;
 }
-function applyFilters(){
+
+function applyFilters(pair){
   const q=$('#q').value.trim().toLowerCase();
   const inSession=$('#chkSession').checked;
-  VIEW = RAW.filter(r=>{
-    if(inSession && !isInsideSessionART(r.ts)) return false;
+  VIEW=RAW.filter(r=>{
+    if(inSession&&!isInsideSessionART(r.ts)) return false;
     if(!q) return true;
     const date=dtfDate.format(r.ts), time=dtfTime.format(r.ts), src=(r.source??'').toLowerCase();
     return date.includes(q)||time.includes(q)||src.includes(q);
   });
-  page=1; renderTable(); renderSummary();
+  page=1; renderTable(pair); renderSummary();
 }
 
-/* ===== Libros ===== */
-function numOrNaN(v){ const n=Number(v); return Number.isFinite(n)?n:NaN; }
-function parseBook(bk){
-  if(!bk) return null;
-  if(typeof bk==='string'){ try{ bk=JSON.parse(bk); }catch(_){ return null; } }
-  if(!bk||!Array.isArray(bk.bids)||!Array.isArray(bk.asks)) return null;
-  return {bids:bk.bids.slice(0,5).map(p=>[Number(p[0]),Number(p[1])]),
-          asks:bk.asks.slice(0,5).map(p=>[Number(p[0]),Number(p[1])])};
-}
-
-/* ===== Carga con degradación ===== */
-async function loadAll(){
+/* ===== Data loading ===== */
+async function loadAll(pair){
+  if(!pair) return;
   $('#note').textContent=''; $('#diag').textContent=''; RAW=[]; VIEW=[]; scaledCount=0; outSessionCount=0;
 
-  // sanity /health (no obligatorio)
   try{
     const h=await fetchWithTimeout(api('/health'),8000);
     if(!h.ok){ $('#note').textContent=`/health → HTTP ${h.status}`; }
-  }catch(_){ /* ignore */ }
+  }catch(_){}
 
   let rows=null, used=null, lastErr=null, lastStatus=null, lastBody='';
   for(const L of LIMITS){
     try{
-      const r=await fetchWithTimeout(api(`/ticks/recent?limit=${L}`),60000);
+      const r=await fetchWithTimeout(api(`/ticks/recent?pair=${encodeURIComponent(pair.id)}&limit=${L}`),60000);
       lastStatus=r.status;
-      if(!r.ok){ try{ lastBody=await r.text(); }catch(_){ } throw new Error(`HTTP ${r.status}`); }
+      if(!r.ok){ try{ lastBody=await r.text(); }catch(_){} throw new Error(`HTTP ${r.status}`); }
       rows=await r.json();
       if(!Array.isArray(rows)) throw new Error('Formato inesperado');
       used=L; break;
     }catch(e){ lastErr=e; }
   }
   if(!rows){
-    $('#summary').textContent='Error al cargar /ticks/recent';
+    $('#summary').textContent=`Error al cargar /ticks/recent?pair=${pair.id}`;
     $('#diag').className='err';
-    $('#diag').innerHTML = `Respuesta del servidor: <b>HTTP ${lastStatus??'?'}</b><br><code>${(lastBody||String(lastErr)).toString().slice(0,500)}</code>`;
+    $('#diag').innerHTML=`Respuesta del servidor: <b>HTTP ${lastStatus??'?'}</b><br><code>${(lastBody||String(lastErr)).toString().slice(0,500)}</code>`;
     return;
   }
 
-  // Normalizar + ordenar (ASC)
-  RAW = rows.map(r=>{
-    const ts = parseTs(r.ts);
-    let al = parsePriceAny(r.AL30 ?? r.al30);
-    let gd = parsePriceAny(r.GD30 ?? r.gd30);
-    let raRaw = parsePriceAny(r.ratio);
+  // Normalize and sort DESC.
+  RAW=rows.map(r=>{
+    const ts=parseTs(r.ts);
+    let la=parsePriceAny(r.last_a);
+    let lb=parsePriceAny(r.last_b);
+    let raRaw=parsePriceAny(r.ratio);
 
-    // Normalización de escala si ambos >>1000 y ratio razonable
-    const [alN, gdN, scaled] = normalizeScale(al, gd);
-    if (scaled) scaledCount++;
-    al = alN; gd = gdN;
+    // Scale normalization: if both >>1000 and ratio is plausible, divide by 1000.
+    const [laN,lbN,scaled]=normalizeScale(la,lb);
+    if(scaled) scaledCount++;
+    la=laN; lb=lbN;
 
-    // Ratio final
-    const ra = Number.isFinite(raRaw) ? raRaw : (Number.isFinite(al)&&Number.isFinite(gd)&&gd>0 ? al/gd : NaN);
-
-    // Libros opcionales
-    const bA = parseBook(r.book_al30);
-    const bG = parseBook(r.book_gd30);
+    const ra=Number.isFinite(raRaw)?raRaw:(Number.isFinite(la)&&Number.isFinite(lb)&&lb>0?la/lb:NaN);
 
     return {
       ts,
-      al30: Number.isFinite(al) ? al : NaN,
-      gd30: Number.isFinite(gd) ? gd : NaN,
-      ratio: Number.isFinite(ra) ? ra : NaN,
-      source: r.source,
-      bi_al30: numOrNaN(r.bi_al30),
-      of_al30: numOrNaN(r.of_al30),
-      bi_gd30: numOrNaN(r.bi_gd30),
-      of_gd30: numOrNaN(r.of_gd30),
-      vol_al30: numOrNaN(r.vol_al30),
-      vol_gd30: numOrNaN(r.vol_gd30),
-      book_al30: bA, book_gd30: bG
+      last_a:Number.isFinite(la)?la:NaN,
+      last_b:Number.isFinite(lb)?lb:NaN,
+      ratio:Number.isFinite(ra)?ra:NaN,
+      source:r.source,
+      bid_a:Number.isFinite(r.bid_a)?r.bid_a:NaN,
+      ask_a:Number.isFinite(r.ask_a)?r.ask_a:NaN,
+      bid_b:Number.isFinite(r.bid_b)?r.bid_b:NaN,
+      ask_b:Number.isFinite(r.ask_b)?r.ask_b:NaN,
+      vol_a:Number.isFinite(r.vol_a)?r.vol_a:NaN,
+      vol_b:Number.isFinite(r.vol_b)?r.vol_b:NaN,
     };
   }).filter(o=>Number.isFinite(o.ts)).sort((a,b)=>b.ts-a.ts);
 
-  // Contabilizar cuántas fuera de sesión hay (informativo)
-  outSessionCount = RAW.reduce((a,r)=> a + (isInsideSessionART(r.ts) ? 0 : 1), 0);
+  outSessionCount=RAW.reduce((a,r)=>a+(isInsideSessionART(r.ts)?0:1),0);
 
-  $('#note').textContent = `limit usado: ${used.toLocaleString('en-US')} • filas recibidas: ${rows.length.toLocaleString('es-AR')}`;
-  renderSummary(); applyFilters();
+  $('#note').textContent=`limit usado: ${used.toLocaleString('en-US')} • filas recibidas: ${rows.length.toLocaleString('es-AR')}`;
+  renderSummary(); applyFilters(pair);
 }
 
-/* ===== Export CSV ===== */
-function exportCSV(){
-  if(!VIEW.length){ alert('No hay datos para exportar.'); return; }
-  const header=['fecha','hora_art','al30','gd30','ratio','source','bi_al30','of_al30','bi_gd30','of_gd30','vol_al30','vol_gd30'];
-  const lines=[header.join(',')];
-  for(const r of VIEW){
-    const ratio=Number.isFinite(r.ratio)?r.ratio:(r.al30>0&&r.gd30>0?r.al30/r.gd30:NaN);
-    lines.push([
-      dtfDate.format(r.ts), dtfTime.format(r.ts),
-      Number.isFinite(r.al30)?r.al30:'', Number.isFinite(r.gd30)?r.gd30:'',
-      Number.isFinite(ratio)?ratio:'', r.source??'',
-      Number.isFinite(r.bi_al30)?r.bi_al30:'', Number.isFinite(r.of_al30)?r.of_al30:'',
-      Number.isFinite(r.bi_gd30)?r.bi_gd30:'', Number.isFinite(r.of_gd30)?r.of_gd30:'',
-      Number.isFinite(r.vol_al30)?r.vol_al30:'', Number.isFinite(r.vol_gd30)?r.vol_gd30:''
-    ].join(','));
-  }
-  const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8;'});
-  const url=URL.createObjectURL(blob); const a=document.createElement('a');
-  a.href=url; a.download='cotizaciones_al30_gd30.csv'; a.click(); URL.revokeObjectURL(url);
-}
-
-/* ===== Eventos ===== */
-$('#btnReload').addEventListener('click', loadAll);
-$('#btnExport').addEventListener('click', exportCSV);
-$('#selPageSize').addEventListener('change', e=>{ pageSize=parseInt(e.target.value,10)||500; page=1; renderTable(); });
-$('#selPage').addEventListener('change', e=>{ page=parseInt(e.target.value,10)||1; renderTable(); });
-$('#chkSession').addEventListener('change', applyFilters);
-$('#q').addEventListener('keydown', e=>{ if(e.key==='Enter') applyFilters(); });
-window.addEventListener('keydown', e=>{
-  if(e.key==='/' && document.activeElement!==$('#q')){ e.preventDefault(); $('#q').focus(); }
-  if(e.key==='ArrowRight'){ const pages=Math.max(1,Math.ceil(VIEW.length/pageSize)); if(page<pages){ page++; $('#selPage').value=String(page); renderTable(); } }
-  if(e.key==='ArrowLeft'){ if(page>1){ page--; $('#selPage').value=String(page); renderTable(); } }
-});
-
-/* ===== Punta en vivo (polling /orderbook/recent) ===== */
+/* ===== Live panel ===== */
 async function fetchBook(sym){
   try{
-    const r = await fetch(api(`/orderbook/recent?symbol=${sym}&depth=1`));
+    const r=await fetch(api(`/orderbook/recent?symbol=${sym}&depth=1`));
     if(!r.ok) return null;
     return await r.json();
   }catch(_){ return null; }
 }
-async function fetchLastTick(){
+
+async function fetchLastTick(pair){
   try{
-    const r = await fetch(api('/ticks/recent?limit=1'));
+    const r=await fetch(api(`/ticks/recent?pair=${encodeURIComponent(pair.id)}&limit=1`));
     if(!r.ok) return null;
-    const a = await r.json();
-    return Array.isArray(a) && a.length ? a[0] : null;
+    const a=await r.json();
+    return Array.isArray(a)&&a.length?a[0]:null;
   }catch(_){ return null; }
 }
+
 function renderLiveCard(sym, ob, vol){
-  const bid = ob && ob.bids && ob.bids[0];
-  const ask = ob && ob.asks && ob.asks[0];
-  const bp = bid ? fmtNum(bid.price,2) : '—';
-  const bs = bid ? fmtNum(bid.size,0) : '—';
-  const ap = ask ? fmtNum(ask.price,2) : '—';
-  const as = ask ? fmtNum(ask.size,0) : '—';
-  const spread = (bid&&ask) ? fmtNum(ask.price-bid.price,2) : '—';
-  const vtxt = Number.isFinite(vol) ? fmtNum(vol,0) : '—';
+  const bid=ob&&ob.bids&&ob.bids[0];
+  const ask=ob&&ob.asks&&ob.asks[0];
+  const bp=bid?fmtNum(bid.price,2):'—';
+  const bs=bid?fmtNum(bid.size,0):'—';
+  const ap=ask?fmtNum(ask.price,2):'—';
+  const as=ask?fmtNum(ask.size,0):'—';
+  const spread=(bid&&ask)?fmtNum(ask.price-bid.price,2):'—';
+  const vtxt=Number.isFinite(vol)?fmtNum(vol,0):'—';
   return `
     <div class="panel" style="flex:1;min-width:240px;background:var(--chip)">
       <div style="font-weight:700;color:#c9d3e7;margin-bottom:6px">${sym}</div>
@@ -419,31 +419,89 @@ function renderLiveCard(sym, ob, vol){
       </div>
     </div>`;
 }
-async function refreshLive(){
-  const [al, gd, tick] = await Promise.all([fetchBook('AL30'), fetchBook('GD30'), fetchLastTick()]);
-  const vAl = tick ? Number(tick.vol_al30) : NaN;
-  const vGd = tick ? Number(tick.vol_gd30) : NaN;
-  const box = $('#liveBook');
-  if(box) box.innerHTML = renderLiveCard('AL30', al, vAl) + renderLiveCard('GD30', gd, vGd);
-  const st = $('#liveStatus');
+
+async function refreshLive(pair){
+  if(!pair) return;
+  const legA=pair.leg_a.base;
+  const legB=pair.leg_b.base;
+  const [obA,obB,tick]=await Promise.all([fetchBook(legA),fetchBook(legB),fetchLastTick(pair)]);
+  const vA=tick?Number(tick.vol_a):NaN;
+  const vB=tick?Number(tick.vol_b):NaN;
+  const box=$('#liveBook');
+  if(box) box.innerHTML=renderLiveCard(legA,obA,vA)+renderLiveCard(legB,obB,vB);
+  const st=$('#liveStatus');
   if(st){
-    const t = (al&&al.ts) || (gd&&gd.ts);
-    st.textContent = t ? `último: ${dtfTime.format(parseTs(t))}` : 'sin datos';
+    const t=(obA&&obA.ts)||(obB&&obB.ts);
+    st.textContent=t?`último: ${dtfTime.format(parseTs(t))}`:'sin datos';
   }
 }
-setInterval(refreshLive, 2000);
-refreshLive();
 
-/* ===== Auto-refresh tabla histórica ===== */
-/* Solo refresca si el checkbox está activo Y estás en la página 1
-   (mirando lo último). Si navegaste a histórico, no te pisa la vista. */
+/* ===== CSV Export ===== */
+function exportCSV(pair){
+  if(!pair||!VIEW.length){ alert('No hay datos para exportar.'); return; }
+  const legA=pair.leg_a.base;
+  const legB=pair.leg_b.base;
+  const header=['fecha','hora_art',legA.toLowerCase(),legB.toLowerCase(),'ratio','source',
+                `bid_${legA.toLowerCase()}`,`ask_${legA.toLowerCase()}`,
+                `bid_${legB.toLowerCase()}`,`ask_${legB.toLowerCase()}`,
+                `vol_${legA.toLowerCase()}`,`vol_${legB.toLowerCase()}`];
+  const lines=[header.join(',')];
+  for(const r of VIEW){
+    const ratio=Number.isFinite(r.ratio)?r.ratio:(r.last_a>0&&r.last_b>0?r.last_a/r.last_b:NaN);
+    lines.push([
+      dtfDate.format(r.ts), dtfTime.format(r.ts),
+      Number.isFinite(r.last_a)?r.last_a:'', Number.isFinite(r.last_b)?r.last_b:'',
+      Number.isFinite(ratio)?ratio:'', r.source??'',
+      Number.isFinite(r.bid_a)?r.bid_a:'', Number.isFinite(r.ask_a)?r.ask_a:'',
+      Number.isFinite(r.bid_b)?r.bid_b:'', Number.isFinite(r.ask_b)?r.ask_b:'',
+      Number.isFinite(r.vol_a)?r.vol_a:'', Number.isFinite(r.vol_b)?r.vol_b:''
+    ].join(','));
+  }
+  const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download=`cotizaciones_${pair.id.toLowerCase()}.csv`; a.click(); URL.revokeObjectURL(url);
+}
+
+/* ===== Events ===== */
+$('#btnReload').addEventListener('click',()=>loadAll(activePair));
+$('#btnExport').addEventListener('click',()=>exportCSV(activePair));
+$('#selPageSize').addEventListener('change',e=>{ pageSize=parseInt(e.target.value,10)||500; page=1; renderTable(activePair); });
+$('#selPage').addEventListener('change',e=>{ page=parseInt(e.target.value,10)||1; renderTable(activePair); });
+$('#chkSession').addEventListener('change',()=>applyFilters(activePair));
+$('#q').addEventListener('keydown',e=>{ if(e.key==='Enter') applyFilters(activePair); });
+window.addEventListener('keydown',e=>{
+  if(e.key==='/'&&document.activeElement!==$('#q')){ e.preventDefault(); $('#q').focus(); }
+  if(e.key==='ArrowRight'){ const pages=Math.max(1,Math.ceil(VIEW.length/pageSize)); if(page<pages){ page++; $('#selPage').value=String(page); renderTable(activePair); } }
+  if(e.key==='ArrowLeft'){ if(page>1){ page--; $('#selPage').value=String(page); renderTable(activePair); } }
+});
+
+/* ===== Live refresh (2s) — always uses activePair ===== */
+setInterval(()=>refreshLive(activePair), 2000);
+
+/* ===== Auto-refresh historical table (5s) — only page 1 and when auto is checked ===== */
 setInterval(()=>{
-  const auto = $('#chkAuto');
-  if(auto && auto.checked && page === 1) loadAll();
+  const auto=$('#chkAuto');
+  if(auto&&auto.checked&&page===1) loadAll(activePair);
 }, 5000);
 
-/* ===== Arranque ===== */
-loadAll();
+/* ===== Bootstrap ===== */
+async function init(){
+  try{
+    const r=await fetchWithTimeout(api('/config/pairs'),10000);
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    PAIRS=await r.json();
+    if(!Array.isArray(PAIRS)||!PAIRS.length) throw new Error('Empty pair list');
+  }catch(e){
+    $('#summary').textContent=`Error cargando /config/pairs: ${e}`;
+    $('#diag').className='err';
+    return;
+  }
+  buildTabs(PAIRS);
+  // Default to first pair (AL30/GD30 by convention — it's first in config).
+  switchPair(PAIRS[0]);
+}
+
+init();
 </script>
 </body>
 </html>
