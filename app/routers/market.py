@@ -23,7 +23,23 @@ def ticks_recent(
       - GD30 → SELECT ts, gd30 AS last, source FROM ticks
     Si `symbol` es None, devuelve ambas piernas por fila.
     """
-    q_all = "SELECT ts, al30, gd30, source FROM ticks ORDER BY ts DESC LIMIT ?"
+    # Subquery: precio del último libro (level 1) en o antes del ts del tick.
+    def _ob(sym: str, side: str) -> str:
+        return (
+            f"(SELECT price FROM orderbooks o WHERE o.symbol='{sym}' "
+            f"AND o.side='{side}' AND o.level=1 AND o.ts <= t.ts "
+            f"ORDER BY o.ts DESC LIMIT 1)"
+        )
+
+    q_all = f"""
+        SELECT t.ts, t.al30, t.gd30, t.source,
+               t.vol_al30, t.vol_gd30, t.turn_al30, t.turn_gd30,
+               {_ob('AL30','BID')} AS bi_al30,
+               {_ob('AL30','ASK')} AS of_al30,
+               {_ob('GD30','BID')} AS bi_gd30,
+               {_ob('GD30','ASK')} AS of_gd30
+        FROM ticks t ORDER BY t.ts DESC LIMIT ?
+    """
     q_sym = {
         "AL30": "SELECT ts, al30 AS last, source FROM ticks ORDER BY ts DESC LIMIT ?",
         "GD30": "SELECT ts, gd30 AS last, source FROM ticks ORDER BY ts DESC LIMIT ?",
@@ -36,9 +52,23 @@ def ticks_recent(
             return list(reversed(rows))  # ascendente como pedía el API viejo
         cur.execute(q_all, (limit,))
         out = []
-        for ts, al30, gd30, source in cur.fetchall():
-            out.append({"ts": ts, "AL30": float(al30) if al30 is not None else None,
-                        "GD30": float(gd30) if gd30 is not None else None, "source": source})
+        for (ts, al30, gd30, source,
+             vol_al30, vol_gd30, turn_al30, turn_gd30,
+             bi_al30, of_al30, bi_gd30, of_gd30) in cur.fetchall():
+            out.append({
+                "ts": ts,
+                "AL30": float(al30) if al30 is not None else None,
+                "GD30": float(gd30) if gd30 is not None else None,
+                "source": source,
+                "vol_al30": float(vol_al30) if vol_al30 is not None else None,
+                "vol_gd30": float(vol_gd30) if vol_gd30 is not None else None,
+                "turn_al30": float(turn_al30) if turn_al30 is not None else None,
+                "turn_gd30": float(turn_gd30) if turn_gd30 is not None else None,
+                "bi_al30": float(bi_al30) if bi_al30 is not None else None,
+                "of_al30": float(of_al30) if of_al30 is not None else None,
+                "bi_gd30": float(bi_gd30) if bi_gd30 is not None else None,
+                "of_gd30": float(of_gd30) if of_gd30 is not None else None,
+            })
         return list(reversed(out))
 
 @router.get("/orderbook/recent")

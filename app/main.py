@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os, sqlite3, asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 from .routers.market import router as market_router
 
 app = FastAPI(title="WS Bonos API", version="0.1.0")
@@ -11,6 +12,9 @@ def health():
 
 # Rutas REST (ticks + orderbook)
 app.include_router(market_router)
+
+# Páginas HTML servidas en /static/* (index.html, tabla.html)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # WebSocket: emite el último tick cuando hay uno nuevo en la DB
 @app.websocket("/ws")

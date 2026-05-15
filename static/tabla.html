@@ -42,6 +42,7 @@
     <h1>Tabla de Cotizaciones — AL30 / GD30 / Ratio</h1>
     <div class="toolbar">
       <button class="btn" id="btnReload">Recargar</button>
+      <label class="pill"><input type="checkbox" id="chkAuto" checked> Auto 5s</label>
       <button class="btn" id="btnExport">Exportar CSV</button>
       <label class="pill"><input type="checkbox" id="chkSession" checked> Filtrar horario (10:30–17:00 ART)</label>
       <label class="pill"> Página
@@ -61,6 +62,13 @@
   </header>
 
   <main>
+    <div class="panel" style="margin-bottom:12px">
+      <div class="topline">
+        <strong style="color:#c5cfde">Punta en vivo</strong>
+        <span id="liveStatus" class="muted">conectando…</span>
+      </div>
+      <div id="liveBook" style="display:flex;gap:1rem;flex-wrap:wrap"></div>
+    </div>
     <div class="panel">
       <div class="topline">
         <div class="grow">
@@ -82,6 +90,8 @@
               <th>Source</th>
               <th>Bid/Ask AL30</th>
               <th>Bid/Ask GD30</th>
+              <th>Vol AL30</th>
+              <th>Vol GD30</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -107,7 +117,7 @@ const MARKET_TZ='America/Argentina/Buenos_Aires';
 const SESSION_OPEN_H=10, SESSION_OPEN_M=30;   // 10:30
 const SESSION_CLOSE_H=17, SESSION_CLOSE_M=0;  // 17:00
 const SESSION_DAYS=new Set([1,2,3,4,5]);      // lun..vie
-const LIMITS=[1_000_000,300_000,100_000];
+const LIMITS=[1000,500,100];
 
 /* ===== Helpers ===== */
 const $=s=>document.querySelector(s);
@@ -205,8 +215,8 @@ function setCounts(){
 }
 function renderSummary(){
   if(!RAW.length){ $('#summary').textContent='Sin filas.'; $('#range').textContent=''; $('#diag').textContent=''; return; }
-  const tsMin=RAW[0].ts, tsMax=RAW[RAW.length-1].ts;
-  $('#summary').textContent=`Histórico: ${RAW.length.toLocaleString('es-AR')} filas (ASC)`;
+  const tsMin=RAW[RAW.length-1].ts, tsMax=RAW[0].ts;
+  $('#summary').textContent=`Histórico: ${RAW.length.toLocaleString('es-AR')} filas (DESC)`;
   $('#range').textContent=`Rango: ${dtfDate.format(tsMin)} ${dtfTime.format(tsMin)} → ${dtfDate.format(tsMax)} ${dtfTime.format(tsMax)}`;
   const msgs=[];
   if(scaledCount>0) msgs.push(`Normalizadas ${scaledCount.toLocaleString('es-AR')} filas (÷1000) por escala anómala`);
@@ -233,7 +243,9 @@ function renderTable(){
       <td>${fmtNum(ratio,6)}</td>
       <td class="muted">${r.source??'—'}</td>
       <td>${Number.isFinite(biA)||Number.isFinite(ofA)?`${fmtNum(biA,2)} / ${fmtNum(ofA,2)}`:'—'}</td>
-      <td>${Number.isFinite(biG)||Number.isFinite(ofG)?`${fmtNum(biG,2)} / ${fmtNum(ofG,2)}`:'—'}</td>`;
+      <td>${Number.isFinite(biG)||Number.isFinite(ofG)?`${fmtNum(biG,2)} / ${fmtNum(ofG,2)}`:'—'}</td>
+      <td>${Number.isFinite(r.vol_al30)?fmtNum(r.vol_al30,0):'—'}</td>
+      <td>${Number.isFinite(r.vol_gd30)?fmtNum(r.vol_gd30,0):'—'}</td>`;
     tb.appendChild(tr);
   }
   setCounts();
@@ -292,8 +304,8 @@ async function loadAll(){
   // Normalizar + ordenar (ASC)
   RAW = rows.map(r=>{
     const ts = parseTs(r.ts);
-    let al = parsePriceAny(r.al30);
-    let gd = parsePriceAny(r.gd30);
+    let al = parsePriceAny(r.AL30 ?? r.al30);
+    let gd = parsePriceAny(r.GD30 ?? r.gd30);
     let raRaw = parsePriceAny(r.ratio);
 
     // Normalización de escala si ambos >>1000 y ratio razonable
@@ -318,9 +330,11 @@ async function loadAll(){
       of_al30: numOrNaN(r.of_al30),
       bi_gd30: numOrNaN(r.bi_gd30),
       of_gd30: numOrNaN(r.of_gd30),
+      vol_al30: numOrNaN(r.vol_al30),
+      vol_gd30: numOrNaN(r.vol_gd30),
       book_al30: bA, book_gd30: bG
     };
-  }).filter(o=>Number.isFinite(o.ts)).sort((a,b)=>a.ts-b.ts);
+  }).filter(o=>Number.isFinite(o.ts)).sort((a,b)=>b.ts-a.ts);
 
   // Contabilizar cuántas fuera de sesión hay (informativo)
   outSessionCount = RAW.reduce((a,r)=> a + (isInsideSessionART(r.ts) ? 0 : 1), 0);
@@ -332,7 +346,7 @@ async function loadAll(){
 /* ===== Export CSV ===== */
 function exportCSV(){
   if(!VIEW.length){ alert('No hay datos para exportar.'); return; }
-  const header=['fecha','hora_art','al30','gd30','ratio','source','bi_al30','of_al30','bi_gd30','of_gd30'];
+  const header=['fecha','hora_art','al30','gd30','ratio','source','bi_al30','of_al30','bi_gd30','of_gd30','vol_al30','vol_gd30'];
   const lines=[header.join(',')];
   for(const r of VIEW){
     const ratio=Number.isFinite(r.ratio)?r.ratio:(r.al30>0&&r.gd30>0?r.al30/r.gd30:NaN);
@@ -341,7 +355,8 @@ function exportCSV(){
       Number.isFinite(r.al30)?r.al30:'', Number.isFinite(r.gd30)?r.gd30:'',
       Number.isFinite(ratio)?ratio:'', r.source??'',
       Number.isFinite(r.bi_al30)?r.bi_al30:'', Number.isFinite(r.of_al30)?r.of_al30:'',
-      Number.isFinite(r.bi_gd30)?r.bi_gd30:'', Number.isFinite(r.of_gd30)?r.of_gd30:''
+      Number.isFinite(r.bi_gd30)?r.bi_gd30:'', Number.isFinite(r.of_gd30)?r.of_gd30:'',
+      Number.isFinite(r.vol_al30)?r.vol_al30:'', Number.isFinite(r.vol_gd30)?r.vol_gd30:''
     ].join(','));
   }
   const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8;'});
@@ -361,6 +376,71 @@ window.addEventListener('keydown', e=>{
   if(e.key==='ArrowRight'){ const pages=Math.max(1,Math.ceil(VIEW.length/pageSize)); if(page<pages){ page++; $('#selPage').value=String(page); renderTable(); } }
   if(e.key==='ArrowLeft'){ if(page>1){ page--; $('#selPage').value=String(page); renderTable(); } }
 });
+
+/* ===== Punta en vivo (polling /orderbook/recent) ===== */
+async function fetchBook(sym){
+  try{
+    const r = await fetch(api(`/orderbook/recent?symbol=${sym}&depth=1`));
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(_){ return null; }
+}
+async function fetchLastTick(){
+  try{
+    const r = await fetch(api('/ticks/recent?limit=1'));
+    if(!r.ok) return null;
+    const a = await r.json();
+    return Array.isArray(a) && a.length ? a[0] : null;
+  }catch(_){ return null; }
+}
+function renderLiveCard(sym, ob, vol){
+  const bid = ob && ob.bids && ob.bids[0];
+  const ask = ob && ob.asks && ob.asks[0];
+  const bp = bid ? fmtNum(bid.price,2) : '—';
+  const bs = bid ? fmtNum(bid.size,0) : '—';
+  const ap = ask ? fmtNum(ask.price,2) : '—';
+  const as = ask ? fmtNum(ask.size,0) : '—';
+  const spread = (bid&&ask) ? fmtNum(ask.price-bid.price,2) : '—';
+  const vtxt = Number.isFinite(vol) ? fmtNum(vol,0) : '—';
+  return `
+    <div class="panel" style="flex:1;min-width:240px;background:var(--chip)">
+      <div style="font-weight:700;color:#c9d3e7;margin-bottom:6px">${sym}</div>
+      <div style="display:flex;gap:1.2rem;flex-wrap:wrap">
+        <div><div class="muted" style="font-size:12px">BID</div>
+          <div class="ok" style="font-size:18px;font-weight:700">${bp}</div>
+          <div class="muted" style="font-size:12px">${bs}</div></div>
+        <div><div class="muted" style="font-size:12px">ASK</div>
+          <div class="err" style="font-size:18px;font-weight:700">${ap}</div>
+          <div class="muted" style="font-size:12px">${as}</div></div>
+        <div><div class="muted" style="font-size:12px">Spread</div>
+          <div style="font-size:18px;font-weight:700">${spread}</div></div>
+        <div><div class="muted" style="font-size:12px">Vol (nominales)</div>
+          <div class="accent" style="font-size:18px;font-weight:700;color:var(--accent)">${vtxt}</div></div>
+      </div>
+    </div>`;
+}
+async function refreshLive(){
+  const [al, gd, tick] = await Promise.all([fetchBook('AL30'), fetchBook('GD30'), fetchLastTick()]);
+  const vAl = tick ? Number(tick.vol_al30) : NaN;
+  const vGd = tick ? Number(tick.vol_gd30) : NaN;
+  const box = $('#liveBook');
+  if(box) box.innerHTML = renderLiveCard('AL30', al, vAl) + renderLiveCard('GD30', gd, vGd);
+  const st = $('#liveStatus');
+  if(st){
+    const t = (al&&al.ts) || (gd&&gd.ts);
+    st.textContent = t ? `último: ${dtfTime.format(parseTs(t))}` : 'sin datos';
+  }
+}
+setInterval(refreshLive, 2000);
+refreshLive();
+
+/* ===== Auto-refresh tabla histórica ===== */
+/* Solo refresca si el checkbox está activo Y estás en la página 1
+   (mirando lo último). Si navegaste a histórico, no te pisa la vista. */
+setInterval(()=>{
+  const auto = $('#chkAuto');
+  if(auto && auto.checked && page === 1) loadAll();
+}, 5000);
 
 /* ===== Arranque ===== */
 loadAll();
