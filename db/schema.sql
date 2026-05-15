@@ -1,14 +1,15 @@
-CREATE TABLE ticks(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL,
-            al30 REAL NOT NULL,
-            gd30 REAL NOT NULL,
-            ratio REAL,
-            source TEXT
-        , vol_al30 REAL, vol_gd30 REAL, turn_al30 REAL, turn_gd30 REAL);
-CREATE TABLE sqlite_sequence(name,seq);
-CREATE INDEX idx_ticks_ts ON ticks(ts);
-CREATE UNIQUE INDEX ux_ticks_ts ON ticks(ts);
+CREATE TABLE ticks (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts       TEXT    NOT NULL,
+  symbol   TEXT    NOT NULL,
+  last     REAL,
+  vol      REAL,
+  turnover REAL,
+  source   TEXT,
+  UNIQUE(ts, symbol)
+);
+CREATE UNIQUE INDEX ux_ticks_ts_symbol ON ticks(ts, symbol);
+CREATE INDEX idx_ticks_symbol_ts_desc ON ticks(symbol, ts DESC);
 CREATE TABLE orderbooks (
   symbol   TEXT    NOT NULL,
   ts       TEXT    NOT NULL,         -- mismo clock del proveedor

@@ -10,14 +10,15 @@ from typing import Callable, Awaitable
 import httpx
 import websockets
 import websockets.exceptions
+from config.pairs import valid_bases, ws_symbols
 
 logger = logging.getLogger(__name__)
 
-# Símbolos XOMS completos que se suscriben al iniciar la sesión WS.
-WS_SYMBOLS: list[str] = [
-    "MERV - XMEV - AL30 - 24hs",
-    "MERV - XMEV - GD30 - 24hs",
-]
+# All configured XOMS symbol strings — derived from config/pairs.py at startup.
+WS_SYMBOLS: list[str] = ws_symbols()
+
+# Cache the set of valid base tickers for fast O(1) lookup in _extract_base_symbol.
+_VALID_BASES: set[str] = valid_bases()
 
 MARKET_ID = "ROFX"
 
@@ -42,24 +43,36 @@ class MdMessage:
 
 def _extract_base_symbol(sym: str) -> str | None:
     """
-    Extrae 'AL30' o 'GD30' de la forma completa XOMS, por ejemplo:
-    'MERV - XMEV - AL30 - 24hs' -> 'AL30'.
-    Escrito inline porque el regex de veta.py no manejaba variantes como AL30D.
+    Extrae el base ticker configurado de la forma completa XOMS.
+    Ejemplo: 'MERV - XMEV - AL30 - 24hs' -> 'AL30'.
+
+    Derivado dinámicamente de config/pairs.py — no hay tuplas hardcodeadas.
+    Devuelve None y loguea WARNING si el símbolo no corresponde a ningún leg configurado.
     """
     u = sym.strip().upper()
-    if u in ("AL30", "GD30"):
+
+    # Fast path: the full symbol IS a base ticker (defensive, should not happen in practice).
+    if u in _VALID_BASES:
         return u
+
+    # Split on ' - ' separators and check each part against configured bases.
     parts = re.split(r"\s*-\s*", u)
     for p in parts:
         p = p.strip()
-        if p in ("AL30", "GD30"):
+        if p in _VALID_BASES:
             return p
-        for base in ("AL30", "GD30"):
+        # Handle suffixed variants like AL30D, AL30C (MEP/CCL) — return the base.
+        for base in _VALID_BASES:
             if p.startswith(base):
                 return base
-    m = re.search(r"\b(AL30|GD30)", u)
-    if m:
-        return m.group(1)
+
+    # Fallback: regex word-boundary search across the whole string.
+    for base in _VALID_BASES:
+        m = re.search(rf"\b{re.escape(base)}", u)
+        if m:
+            return base
+
+    logger.warning("_extract_base_symbol: no configured base found in symbol %r", sym)
     return None
 
 
